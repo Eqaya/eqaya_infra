@@ -1,0 +1,123 @@
+name: Deploy Infrastructure and Application
+
+on:
+  push:
+    branches:
+      - release
+  pull_request:
+    branches:
+      - release
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: eqaya-dev
+
+jobs:
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Determine Environment
+        id: env
+        run: |
+          # Deploy to dev for release branch
+          echo "environment=dev" >> $GITHUB_OUTPUT
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./dev
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./dev
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        working-directory: ./dev
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/release'
+        run: terraform apply -auto-approve tfplan
+        working-directory: ./dev
+
+  build-and-deploy-app:
+    name: Build and Deploy Application to EC2
+    needs: deploy-infrastructure
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/release'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build Docker image (assumes Dockerfile is in repo root)
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+
+          # Push both tagged and latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Get EC2 Instance IP
+        id: get-ec2-ip
+        run: |
+          INSTANCE_IP=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=Eqaya-Dev-Workstation" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text)
+          echo "instance_ip=$INSTANCE_IP" >> $GITHUB_OUTPUT
+
+      - name: Deploy to EC2
+        env:
+          EC2_IP: ${{ steps.get-ec2-ip.outputs.instance_ip }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Note: This requires SSH key to be set up as GitHub secret
+          # For now, this step shows the deployment command
+          # You'll need to set up SSH access or use AWS Systems Manager Session Manager
+
+          echo "To deploy manually, SSH to EC2 and run:"
+          echo "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY"
+          echo "docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          echo "docker stop eqaya-app || true"
+          echo "docker rm eqaya-app || true"
+          echo "docker run -d --name eqaya-app -p 8080:80 --restart unless-stopped $ECR_REGISTRY/$ECR_REPOSITORY:latest"

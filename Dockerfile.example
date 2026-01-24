@@ -1,0 +1,43 @@
+# Example Dockerfile for Python/Flask Application
+# Rename this to "Dockerfile" and customize for your application
+
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Expose port 80 (required for ALB)
+EXPOSE 80
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost/health || exit 1
+
+# Run application
+CMD ["python", "app.py"]
+
+# ============================================
+# Example for Node.js/Express Application
+# ============================================
+# FROM node:18-alpine
+#
+# WORKDIR /app
+#
+# COPY package*.json ./
+# RUN npm ci --only=production
+#
+# COPY . .
+#
+# EXPOSE 80
+#
+# HEALTHCHECK --interval=30s --timeout=3s \
+#   CMD node healthcheck.js || exit 1
+#
+# CMD ["node", "server.js"]
