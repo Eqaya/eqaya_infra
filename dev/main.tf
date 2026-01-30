@@ -181,16 +181,8 @@ resource "aws_instance" "dev_server" {
 
   user_data = <<-EOF
               #!/bin/bash
-              set -e
-
-              # Log all output for debugging
-              exec > >(tee /var/log/user-data.log)
-              exec 2>&1
-
-              echo "Starting EC2 user-data script..."
-
               apt-get update -y
-              apt-get install -y awscli jq docker.io nginx postgresql-client certbot python3-certbot-nginx
+              apt-get install -y awscli jq docker.io nginx postgresql-client
 
               # Start Docker
               systemctl start docker
@@ -221,19 +213,11 @@ resource "aws_instance" "dev_server" {
               chmod +x /home/ubuntu/get_db_host.sh
               chown ubuntu:ubuntu /home/ubuntu/get_db_host.sh
 
-              # Remove default nginx config
-              rm -f /etc/nginx/sites-enabled/default
-
-              # Configure nginx for SSL with Let's Encrypt
-              cat > /etc/nginx/sites-available/app.conf <<'NGINX'
+              # Configure nginx as reverse proxy placeholder
+              cat > /etc/nginx/conf.d/app.conf <<'NGINX'
               server {
                   listen 80;
-                  server_name ${var.dev_domain_name};
-
-                  # ACME challenge location for Let's Encrypt
-                  location /.well-known/acme-challenge/ {
-                      root /var/www/certbot;
-                  }
+                  server_name _;
 
                   location / {
                       proxy_pass http://localhost:8080;
@@ -250,47 +234,8 @@ resource "aws_instance" "dev_server" {
               }
               NGINX
 
-              # Enable the site
-              ln -sf /etc/nginx/sites-available/app.conf /etc/nginx/sites-enabled/app.conf
-
-              # Test nginx config
-              nginx -t
-
-              # Start nginx
-              systemctl restart nginx
+              systemctl start nginx
               systemctl enable nginx
-
-              # Create directory for certbot webroot
-              mkdir -p /var/www/certbot
-              chown -R www-data:www-data /var/www/certbot
-
-              echo "Waiting 90 seconds for DNS to propagate..."
-              sleep 90
-
-              # Get Let's Encrypt SSL certificate
-              echo "Requesting SSL certificate from Let's Encrypt..."
-              certbot --nginx \
-                -d ${var.dev_domain_name} \
-                --non-interactive \
-                --agree-tos \
-                --email admin@eqaya.com \
-                --redirect \
-                --no-eff-email || echo "Certbot failed, check logs at /var/log/letsencrypt/letsencrypt.log"
-
-              # Set up auto-renewal cron job (runs twice daily)
-              echo "0 0,12 * * * root certbot renew --quiet --nginx" > /etc/cron.d/certbot-renew
-              chmod 644 /etc/cron.d/certbot-renew
-
-              # Create renewal hook to reload nginx after renewal
-              mkdir -p /etc/letsencrypt/renewal-hooks/post
-              cat > /etc/letsencrypt/renewal-hooks/post/nginx-reload.sh <<'HOOK'
-              #!/bin/bash
-              systemctl reload nginx
-              HOOK
-              chmod +x /etc/letsencrypt/renewal-hooks/post/nginx-reload.sh
-
-              echo "SSL certificate setup complete!"
-              echo "User-data script finished successfully."
               EOF
 
   tags = {

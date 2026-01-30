@@ -4,12 +4,7 @@ output "vpc_id" {
 }
 
 output "dev_url" {
-  description = "URL to access the development application (HTTPS with Let's Encrypt)"
-  value       = "https://${var.dev_domain_name}"
-}
-
-output "dev_url_http" {
-  description = "HTTP URL (redirects to HTTPS)"
+  description = "URL to access the development application"
   value       = "http://${var.dev_domain_name}"
 }
 
@@ -73,38 +68,4 @@ output "ecs_cluster_name" {
 output "ecs_service_name" {
   description = "Name of the ECS service"
   value       = aws_ecs_service.dev_backend.name
-}
-
-# --- SSL Certificate Information ---
-output "ssl_certificate_commands" {
-  description = "Commands to check SSL certificate status on EC2"
-  value = <<-EOT
-
-  SSH to instance:
-    ${format("ssh -i ~/.ssh/eqaya-dev-key.pem ubuntu@%s", aws_eip.dev_eip.public_ip)}
-
-  Check SSL certificate status:
-    sudo certbot certificates
-
-  Check user-data logs:
-    sudo tail -f /var/log/user-data.log
-
-  Test HTTPS:
-    curl https://${var.dev_domain_name}/health
-
-  Manual renewal (if needed):
-    sudo certbot renew --dry-run
-  EOT
-}
-
-output "ssl_setup_info" {
-  description = "SSL certificate setup information"
-  value = {
-    provider       = "Let's Encrypt"
-    method         = "Certbot with nginx"
-    domain         = var.dev_domain_name
-    auto_renewal   = "Twice daily via cron"
-    certificate_location = "/etc/letsencrypt/live/${var.dev_domain_name}/"
-    setup_time     = "~4-5 minutes after instance launch"
-  }
 }
