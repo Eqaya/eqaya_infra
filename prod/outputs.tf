@@ -20,7 +20,7 @@ output "rds_endpoint" {
 
 output "redis_endpoint" {
   description = "Redis cluster endpoint"
-  value       = aws_elasticache_cluster.redis.cache_nodes[0].address
+  value       = aws_elasticache_replication_group.redis.primary_endpoint_address
 }
 
 output "db_secret_arn" {
@@ -41,4 +41,24 @@ output "ecs_service_name" {
 output "certificate_arn" {
   description = "ARN of the SSL certificate"
   value       = aws_acm_certificate.prod_cert.arn
+}
+
+output "ecr_repository_url" {
+  description = "Production backend ECR repository URL"
+  value       = aws_ecr_repository.prod.repository_url
+}
+
+output "uploads_bucket" {
+  description = "S3 bucket for production user uploads"
+  value       = aws_s3_bucket.uploads.bucket
+}
+
+output "alb_logs_bucket" {
+  description = "S3 bucket for ALB access logs"
+  value       = aws_s3_bucket.alb_logs.bucket
+}
+
+output "waf_web_acl_arn" {
+  description = "ARN of the API WAF Web ACL"
+  value       = aws_wafv2_web_acl.api.arn
 }

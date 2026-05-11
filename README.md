@@ -16,10 +16,13 @@ Terraform infrastructure for Eqaya development and production environments with 
 - **No ALB**: Cost-optimized setup - deploy directly to EC2
 
 ### Production Environment (`prod/`)
-- Ready for deployment (not yet applied)
-- Includes SSL/TLS with ACM certificate for `api.eqaya.com`
-- Multi-AZ RDS with backups
-- Auto-scaling capable setup
+- ECS Fargate backend behind an HTTPS Application Load Balancer
+- Production ECR repository for immutable backend images
+- ACM certificate and Route53 DNS for `api.eqaya.com`
+- Multi-AZ encrypted RDS PostgreSQL with backups, Performance Insights, and enhanced monitoring
+- Encrypted S3 uploads bucket for application file storage
+- ElastiCache Redis in private subnets
+- WAF managed rules, ALB access logs, split security groups, VPC endpoints, and ECS autoscaling
 
 ## Architecture
 
@@ -301,17 +304,39 @@ terraform destroy
 
 ## Production Deployment
 
-Production is configured but not deployed. When ready:
+Production deploys through `.github/workflows/deploy.yml` from the infrastructure repo.
 
-1. Ensure Route53 hosted zone exists for `eqaya.com`
-2. Review production costs (higher instance sizes, Multi-AZ)
-3. Update branch strategy in GitHub Actions
-4. Deploy:
-   ```bash
-   cd prod
-   terraform init
-   terraform apply
-   ```
+Required GitHub configuration:
+- Secret `AWS_ROLE_TO_ASSUME` for AWS OIDC deployment. If omitted, the workflow falls back to `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+- Optional secret `APP_REPO_TOKEN` if the workflow token cannot read the application repository.
+- Optional secret `PROD_APP_SECRETS_JSON`, for example `{"STRIPE_SECRET_KEY":"...","OPENAI_API_KEY":"..."}`.
+- Optional variable `EQAYA_APP_REPOSITORY`, defaulting to `<owner>/eqaya-platform`.
+- Optional variable `EQAYA_APP_REF`, defaulting to `main`.
+- Optional variable `PROD_APP_ENVIRONMENT_JSON`, for example `{"OPENAI_API_BASE_URL":"https://api.openai.com/v1"}`.
+- Optional variable `PROD_BUDGET_ALERT_EMAILS_JSON`, for example `["ops@example.com"]`.
+
+On a push to `release` or a manual `workflow_dispatch`, the workflow:
+1. Validates production Terraform.
+2. Bootstraps the production ECR repository.
+3. Checks out the app repo and builds `backend/Dockerfile`.
+4. Pushes an immutable `prod-<sha>` image.
+5. Applies `prod/` Terraform with that image.
+6. Waits for the ECS service to become stable.
+
+Manual deployment is still possible:
+```bash
+cd prod
+terraform init
+terraform apply -target=aws_ecr_repository.prod -target=aws_ecr_lifecycle_policy.prod -var='app_image=bootstrap'
+# Build and push backend image to the ecr_repository_url output.
+terraform apply -var='app_image=<pushed-image-uri>'
+```
+
+Production-only provider keys can be injected without editing Terraform by passing:
+- `app_environment` for non-secret values.
+- `app_secrets` for secret values such as `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or SES settings.
+
+Set `budget_alert_emails` to create an AWS monthly budget alert. It is skipped by default because AWS Budgets requires at least one subscriber.
 
 ## Support
 

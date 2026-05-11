@@ -1,4 +1,4 @@
-name: Deploy Infrastructure and Application
+name: Deploy Production Infrastructure and Backend
 
 on:
   push:
@@ -9,115 +9,148 @@ on:
       - release
   workflow_dispatch:
 
+permissions:
+  contents: read
+  id-token: write
+
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: eqaya-dev
+  TERRAFORM_VERSION: 1.5.7
+  APP_REPOSITORY: ${{ vars.EQAYA_APP_REPOSITORY || format('{0}/eqaya-platform', github.repository_owner) }}
+  APP_REF: ${{ vars.EQAYA_APP_REF || 'main' }}
 
 jobs:
-  deploy-infrastructure:
-    name: Deploy Infrastructure
+  validate:
+    name: Validate Terraform
     runs-on: ubuntu-latest
-    outputs:
-      environment: ${{ steps.env.outputs.environment }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+        uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.0
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+      - name: Terraform fmt
+        run: terraform fmt -check
+        working-directory: ./prod
 
-      - name: Determine Environment
-        id: env
-        run: |
-          # Deploy to dev for release branch
-          echo "environment=dev" >> $GITHUB_OUTPUT
+      - name: Terraform init
+        run: terraform init -backend=false
+        working-directory: ./prod
 
-      - name: Terraform Init
-        run: terraform init
-        working-directory: ./dev
-
-      - name: Terraform Validate
+      - name: Terraform validate
         run: terraform validate
-        working-directory: ./dev
+        working-directory: ./prod
 
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
-        working-directory: ./dev
-
-      - name: Terraform Apply
-        if: github.ref == 'refs/heads/release'
-        run: terraform apply -auto-approve tfplan
-        working-directory: ./dev
-
-  build-and-deploy-app:
-    name: Build and Deploy Application to EC2
-    needs: deploy-infrastructure
+  deploy-production:
+    name: Deploy Production
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/release'
+    needs: validate
+    if: github.ref == 'refs/heads/release' || github.event_name == 'workflow_dispatch'
+    environment: production
+    env:
+      AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+      PROD_APP_SECRETS_JSON: ${{ secrets.PROD_APP_SECRETS_JSON }}
+      PROD_APP_ENVIRONMENT_JSON: ${{ vars.PROD_APP_ENVIRONMENT_JSON }}
+      PROD_BUDGET_ALERT_EMAILS_JSON: ${{ vars.PROD_BUDGET_ALERT_EMAILS_JSON }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+        with:
+          path: infra
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Checkout application
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPOSITORY }}
+          ref: ${{ env.APP_REF }}
+          path: app
+          token: ${{ secrets.APP_REPO_TOKEN || github.token }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials with OIDC
+        if: ${{ env.AWS_ROLE_TO_ASSUME != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials with access keys
+        if: ${{ env.AWS_ROLE_TO_ASSUME == '' }}
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Terraform init
+        run: terraform init -input=false
+        working-directory: ./infra/prod
+
+      - name: Write optional production variables
+        run: |
+          jq -n \
+            --argjson app_secrets "${PROD_APP_SECRETS_JSON:-{}}" \
+            --argjson app_environment "${PROD_APP_ENVIRONMENT_JSON:-{}}" \
+            --argjson budget_alert_emails "${PROD_BUDGET_ALERT_EMAILS_JSON:-[]}" \
+            '{
+              app_secrets: $app_secrets,
+              app_environment: $app_environment,
+              budget_alert_emails: $budget_alert_emails
+            }' > prod.auto.tfvars.json
+        working-directory: ./infra/prod
+
+      - name: Bootstrap ECR
+        run: |
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            -target=aws_ecr_repository.prod \
+            -target=aws_ecr_lifecycle_policy.prod \
+            -var="app_image=bootstrap"
+        working-directory: ./infra/prod
+
+      - name: Read ECR repository URL
+        id: ecr
+        run: echo "repository_url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+        working-directory: ./infra/prod
+
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to Amazon ECR
-        id: build-image
+      - name: Build and push backend image
+        id: image
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+          ECR_REPOSITORY_URL: ${{ steps.ecr.outputs.repository_url }}
+          IMAGE_TAG: prod-${{ github.sha }}
         run: |
-          # Build Docker image (assumes Dockerfile is in repo root)
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          IMAGE_URI="$ECR_REPOSITORY_URL:$IMAGE_TAG"
+          docker build \
+            -f app/backend/Dockerfile \
+            -t "$IMAGE_URI" \
+            app/backend
+          docker push "$IMAGE_URI"
+          echo "uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
 
-          # Push both tagged and latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+      - name: Terraform plan
+        run: terraform plan -input=false -out=tfplan -var="app_image=${{ steps.image.outputs.uri }}"
+        working-directory: ./infra/prod
 
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      - name: Terraform apply
+        run: terraform apply -input=false -auto-approve tfplan
+        working-directory: ./infra/prod
 
-      - name: Get EC2 Instance IP
-        id: get-ec2-ip
+      - name: Wait for ECS service stability
         run: |
-          INSTANCE_IP=$(aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=Eqaya-Dev-Workstation" "Name=instance-state-name,Values=running" \
-            --query "Reservations[0].Instances[0].PublicIpAddress" \
-            --output text)
-          echo "instance_ip=$INSTANCE_IP" >> $GITHUB_OUTPUT
-
-      - name: Deploy to EC2
-        env:
-          EC2_IP: ${{ steps.get-ec2-ip.outputs.instance_ip }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          # Note: This requires SSH key to be set up as GitHub secret
-          # For now, this step shows the deployment command
-          # You'll need to set up SSH access or use AWS Systems Manager Session Manager
-
-          echo "To deploy manually, SSH to EC2 and run:"
-          echo "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY"
-          echo "docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          echo "docker stop eqaya-app || true"
-          echo "docker rm eqaya-app || true"
-          echo "docker run -d --name eqaya-app -p 8080:80 --restart unless-stopped $ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          aws ecs wait services-stable \
+            --cluster "$(terraform output -raw ecs_cluster_name)" \
+            --services "$(terraform output -raw ecs_service_name)"
+        working-directory: ./infra/prod
