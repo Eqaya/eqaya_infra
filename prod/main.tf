@@ -4,13 +4,19 @@ provider "aws" {
 
 terraform {
   backend "s3" {
-    bucket = "eqaya-infra-tf-state"
-    key    = "prod/terraform.tfstate"
-    region = "us-east-1"
+    bucket         = "eqaya-infra-tf-state"
+    key            = "prod/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "eqaya-tf-locks"
   }
 }
 
 data "aws_caller_identity" "current" {}
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+data "aws_elb_service_account" "main" {}
 
 locals {
   name_prefix  = "eqaya-prod"
@@ -31,6 +37,11 @@ resource "random_password" "jwt_secret" {
   special = false
 }
 
+resource "random_password" "redis_auth_token" {
+  length  = 64
+  special = false
+}
+
 # --- VPC ---
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
@@ -39,7 +50,7 @@ module "vpc" {
   name = "${local.name_prefix}-vpc"
   cidr = "10.2.0.0/16"
 
-  azs              = ["us-east-1a", "us-east-1b"]
+  azs              = slice(data.aws_availability_zones.available.names, 0, 2)
   public_subnets   = ["10.2.101.0/24", "10.2.102.0/24"]
   private_subnets  = ["10.2.1.0/24", "10.2.2.0/24"]
   database_subnets = ["10.2.201.0/24", "10.2.202.0/24"]
@@ -57,8 +68,21 @@ module "vpc" {
   tags = local.tags
 }
 
-# --- VPC Endpoints to reduce NAT dependency/cost for private ECS tasks ---
+# Gateway endpoint for S3 is free and removes NAT egress for object I/O.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = module.vpc.vpc_id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = module.vpc.private_route_table_ids
+
+  tags = merge(local.tags, { Name = "${local.name_prefix}-s3-endpoint" })
+}
+
+# Interface endpoints are billed per-AZ per-hour. Disabled by default; flip
+# var.enable_interface_endpoints once steady-state NAT egress justifies them.
 resource "aws_security_group" "vpce_sg" {
+  count = var.enable_interface_endpoints ? 1 : 0
+
   name        = "${local.name_prefix}-vpce-sg"
   description = "HTTPS access from ECS tasks to VPC interface endpoints"
   vpc_id      = module.vpc.vpc_id
@@ -80,28 +104,19 @@ resource "aws_security_group" "vpce_sg" {
   tags = local.tags
 }
 
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = module.vpc.vpc_id
-  service_name      = "com.amazonaws.${var.aws_region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = module.vpc.private_route_table_ids
-
-  tags = merge(local.tags, { Name = "${local.name_prefix}-s3-endpoint" })
-}
-
 resource "aws_vpc_endpoint" "interface" {
-  for_each = toset([
+  for_each = var.enable_interface_endpoints ? toset([
     "ecr.api",
     "ecr.dkr",
     "logs",
     "secretsmanager"
-  ])
+  ]) : toset([])
 
   vpc_id              = module.vpc.vpc_id
   service_name        = "com.amazonaws.${var.aws_region}.${each.value}"
   vpc_endpoint_type   = "Interface"
   subnet_ids          = module.vpc.private_subnets
-  security_group_ids  = [aws_security_group.vpce_sg.id]
+  security_group_ids  = [aws_security_group.vpce_sg[0].id]
   private_dns_enabled = true
 
   tags = merge(local.tags, { Name = "${local.name_prefix}-${each.value}-endpoint" })
@@ -195,6 +210,14 @@ resource "aws_s3_bucket" "uploads" {
   tags   = local.tags
 }
 
+resource "aws_s3_bucket_ownership_controls" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "uploads" {
   bucket = aws_s3_bucket.uploads.id
 
@@ -222,9 +245,69 @@ resource "aws_s3_bucket_versioning" "uploads" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  rule {
+    id     = "abort-incomplete-multipart"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  rule {
+    id     = "expire-old-noncurrent-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_transition {
+      noncurrent_days = 30
+      storage_class   = "STANDARD_IA"
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 365
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource = [
+        aws_s3_bucket.uploads.arn,
+        "${aws_s3_bucket.uploads.arn}/*"
+      ]
+      Condition = {
+        Bool = { "aws:SecureTransport" = "false" }
+      }
+    }]
+  })
+}
+
 resource "aws_s3_bucket" "alb_logs" {
   bucket = local.logs_name
   tags   = local.tags
+}
+
+resource "aws_s3_bucket_ownership_controls" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "alb_logs" {
@@ -246,6 +329,30 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  rule {
+    id     = "rotate-logs"
+    status = "Enabled"
+
+    filter {}
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+
+    expiration {
+      days = 90
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
 resource "aws_s3_bucket_policy" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
 
@@ -253,22 +360,23 @@ resource "aws_s3_bucket_policy" "alb_logs" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "AWSLogDeliveryAclCheck"
+        Sid       = "AllowELBAccessLogs"
         Effect    = "Allow"
-        Principal = { Service = "delivery.logs.amazonaws.com" }
-        Action    = "s3:GetBucketAcl"
-        Resource  = aws_s3_bucket.alb_logs.arn
-      },
-      {
-        Sid       = "AWSLogDeliveryWrite"
-        Effect    = "Allow"
-        Principal = { Service = "delivery.logs.amazonaws.com" }
+        Principal = { AWS = data.aws_elb_service_account.main.arn }
         Action    = "s3:PutObject"
         Resource  = "${aws_s3_bucket.alb_logs.arn}/alb/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
+      },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.alb_logs.arn,
+          "${aws_s3_bucket.alb_logs.arn}/*"
+        ]
         Condition = {
-          StringEquals = {
-            "s3:x-amz-acl" = "bucket-owner-full-control"
-          }
+          Bool = { "aws:SecureTransport" = "false" }
         }
       }
     ]
@@ -402,6 +510,28 @@ resource "aws_wafv2_web_acl" "api" {
   }
 
   rule {
+    name     = "RateLimitPerIP"
+    priority = 0
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.waf_rate_limit_per_5min
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.name_prefix}-rate-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
     name     = "AWSManagedRulesCommonRuleSet"
     priority = 1
 
@@ -441,6 +571,72 @@ resource "aws_wafv2_web_acl" "api" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "${local.name_prefix}-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesAmazonIpReputationList"
+    priority = 3
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.name_prefix}-ip-reputation"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesAnonymousIpList"
+    priority = 4
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAnonymousIpList"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.name_prefix}-anonymous-ip"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesSQLiRuleSet"
+    priority = 5
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesSQLiRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.name_prefix}-sqli"
       sampled_requests_enabled   = true
     }
   }
@@ -513,7 +709,7 @@ resource "aws_secretsmanager_secret_version" "db_credentials" {
     host         = aws_db_instance.postgres.address
     port         = 5432
     dbname       = local.db_name
-    database_url = "postgresql://${local.db_username}:${urlencode(random_password.db_password.result)}@${aws_db_instance.postgres.address}:5432/${local.db_name}"
+    database_url = "postgresql://${local.db_username}:${urlencode(random_password.db_password.result)}@${aws_db_instance.postgres.address}:5432/${local.db_name}?sslmode=require"
   })
 }
 
@@ -529,7 +725,9 @@ resource "aws_secretsmanager_secret_version" "app_config" {
   secret_id = aws_secretsmanager_secret.app_config.id
   secret_string = jsonencode(merge(
     {
-      jwt_secret = random_password.jwt_secret.result
+      jwt_secret       = random_password.jwt_secret.result
+      redis_auth_token = random_password.redis_auth_token.result
+      redis_url        = "rediss://default:${random_password.redis_auth_token.result}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
     },
     var.app_secrets
   ))
@@ -611,6 +809,17 @@ resource "aws_iam_role_policy" "ecs_task_app_policy" {
           "ses:SendEmail",
           "ses:SendRawEmail"
         ]
+        Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}"
+      },
+      {
+        Sid    = "AllowECSExecSessions"
+        Effect = "Allow"
+        Action = [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel"
+        ]
         Resource = "*"
       }
     ]
@@ -651,7 +860,7 @@ resource "aws_db_instance" "postgres" {
   username               = local.db_username
   password               = random_password.db_password.result
   db_name                = local.db_name
-  multi_az               = true
+  multi_az               = var.db_multi_az
   deletion_protection    = var.enable_deletion_protection
   skip_final_snapshot    = false
   copy_tags_to_snapshot  = true
@@ -688,7 +897,8 @@ resource "aws_elasticache_replication_group" "redis" {
   num_cache_clusters         = 1
   automatic_failover_enabled = false
   at_rest_encryption_enabled = true
-  transit_encryption_enabled = false
+  transit_encryption_enabled = true
+  auth_token                 = random_password.redis_auth_token.result
   subnet_group_name          = aws_elasticache_subnet_group.redis.name
   security_group_ids         = [aws_security_group.redis_sg.id]
 
@@ -739,13 +949,13 @@ resource "aws_ecs_task_definition" "prod_backend" {
       { name = "FRONTEND_URL", value = var.frontend_url },
       { name = "AWS_REGION", value = var.aws_region },
       { name = "AWS_S3_BUCKET", value = aws_s3_bucket.uploads.bucket },
-      { name = "DATABASE_SSL", value = "false" },
-      { name = "DB_SSL", value = "false" },
+      { name = "DATABASE_SSL", value = "true" },
+      { name = "DB_SSL", value = "true" },
       { name = "DB_HOST", value = aws_db_instance.postgres.address },
       { name = "DB_PORT", value = "5432" },
       { name = "DB_NAME", value = local.db_name },
       { name = "DB_USER", value = local.db_username },
-      { name = "REDIS_URL", value = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
+      { name = "REDIS_TLS", value = "true" }
       ],
       [for name, value in var.app_environment : { name = name, value = value }]
     )
@@ -762,6 +972,14 @@ resource "aws_ecs_task_definition" "prod_backend" {
       {
         name      = "JWT_SECRET"
         valueFrom = "${aws_secretsmanager_secret.app_config.arn}:jwt_secret::"
+      },
+      {
+        name      = "REDIS_URL"
+        valueFrom = "${aws_secretsmanager_secret.app_config.arn}:redis_url::"
+      },
+      {
+        name      = "REDIS_AUTH_TOKEN"
+        valueFrom = "${aws_secretsmanager_secret.app_config.arn}:redis_auth_token::"
       }
       ],
       [for name in keys(var.app_secrets) : {
@@ -775,7 +993,7 @@ resource "aws_ecs_task_definition" "prod_backend" {
       interval    = 30
       timeout     = 5
       retries     = 3
-      startPeriod = 30
+      startPeriod = 60
     }
 
     logConfiguration = {
@@ -825,6 +1043,10 @@ resource "aws_ecs_service" "prod_backend" {
   }
 
   depends_on = [aws_lb_listener.https]
+
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 
   tags = local.tags
 }

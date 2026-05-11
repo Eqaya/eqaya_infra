@@ -25,6 +25,7 @@ variable "environment" {
 variable "app_image" {
   description = "Container image URI for the production backend. CI passes the pushed ECR image URI."
   type        = string
+  default     = "public.ecr.aws/nginx/nginx:stable"
 }
 
 variable "app_port" {
@@ -52,25 +53,37 @@ variable "max_capacity" {
 }
 
 variable "db_instance_class" {
-  description = "RDS PostgreSQL instance class"
+  description = "RDS PostgreSQL instance class. Start small and scale up as load grows."
   type        = string
-  default     = "db.t4g.medium"
+  default     = "db.t4g.small"
 }
 
 variable "db_allocated_storage" {
   description = "Initial RDS storage in GiB"
   type        = number
-  default     = 50
+  default     = 20
 }
 
 variable "db_max_allocated_storage" {
   description = "Maximum RDS autoscaled storage in GiB"
   type        = number
-  default     = 200
+  default     = 100
+}
+
+variable "db_multi_az" {
+  description = "Run RDS Multi-AZ. Off by default to halve compute cost; turn on once customer traffic justifies the failover SLA."
+  type        = bool
+  default     = false
 }
 
 variable "enable_single_nat_gateway" {
-  description = "Use a single NAT gateway to reduce cost. Keep false for stronger AZ-level egress availability."
+  description = "Use a single NAT gateway to reduce cost. Flip to false later for per-AZ egress availability."
+  type        = bool
+  default     = true
+}
+
+variable "enable_interface_endpoints" {
+  description = "Provision interface VPC endpoints (ecr.api/dkr, logs, secretsmanager). Off by default - only worth it above ~1.3TB/mo NAT egress."
   type        = bool
   default     = false
 }
@@ -104,4 +117,10 @@ variable "budget_alert_emails" {
   description = "Email addresses for production budget alerts. Leave empty to skip budget creation."
   type        = list(string)
   default     = []
+}
+
+variable "waf_rate_limit_per_5min" {
+  description = "WAF rate-based rule limit per IP over a 5 minute window. 2000 is conservative; raise as legitimate traffic grows."
+  type        = number
+  default     = 2000
 }
