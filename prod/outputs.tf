@@ -62,3 +62,8 @@ output "waf_web_acl_arn" {
   description = "ARN of the API WAF Web ACL"
   value       = aws_wafv2_web_acl.api.arn
 }
+
+output "alerts_topic_arn" {
+  description = "ARN of the SNS topic for operational CloudWatch alarms"
+  value       = aws_sns_topic.alerts.arn
+}

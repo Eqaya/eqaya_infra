@@ -848,6 +848,25 @@ resource "aws_iam_role_policy_attachment" "rds_monitoring_role" {
 }
 
 # --- RDS PostgreSQL ---
+# Reject any non-TLS client connection at the server, regardless of what the
+# app sets. Complements the client-side DATABASE_SSL/DB_SSL env flags.
+resource "aws_db_parameter_group" "postgres" {
+  name        = "${local.name_prefix}-pg15"
+  family      = "postgres15"
+  description = "Production Postgres 15 parameters for Eqaya"
+
+  parameter {
+    name  = "rds.force_ssl"
+    value = "1"
+  }
+
+  tags = local.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 resource "aws_db_instance" "postgres" {
   identifier             = "${local.name_prefix}-db"
   instance_class         = var.db_instance_class
@@ -864,6 +883,7 @@ resource "aws_db_instance" "postgres" {
   deletion_protection    = var.enable_deletion_protection
   skip_final_snapshot    = false
   copy_tags_to_snapshot  = true
+  parameter_group_name   = aws_db_parameter_group.postgres.name
   db_subnet_group_name   = module.vpc.database_subnet_group_name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
 
@@ -1042,6 +1062,12 @@ resource "aws_ecs_service" "prod_backend" {
     weight            = 1
   }
 
+  # Auto-roll back a deploy whose tasks never reach a healthy state.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   depends_on = [aws_lb_listener.https]
 
   lifecycle {
@@ -1116,4 +1142,138 @@ resource "aws_budgets_budget" "monthly_prod" {
     notification_type          = "ACTUAL"
     subscriber_email_addresses = var.budget_alert_emails
   }
+}
+
+# --- Operational alerting ---
+# Distinct from the cost budget above: these page on live-service health.
+# Reuses budget_alert_emails as the operator contact list.
+resource "aws_sns_topic" "alerts" {
+  name = "${local.name_prefix}-alerts"
+
+  tags = local.tags
+}
+
+resource "aws_sns_topic_subscription" "alerts_email" {
+  for_each = toset(var.budget_alert_emails)
+
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = each.value
+}
+
+# 5xx responses coming from the application (target group).
+resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
+  alarm_name          = "${local.name_prefix}-alb-target-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 10
+  alarm_description   = "Application is returning 5xx errors"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    LoadBalancer = aws_lb.prod.arn_suffix
+    TargetGroup  = aws_lb_target_group.prod_tg.arn_suffix
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = local.tags
+}
+
+# Tasks failing health checks / dropping out of the target group.
+resource "aws_cloudwatch_metric_alarm" "alb_unhealthy_hosts" {
+  alarm_name          = "${local.name_prefix}-alb-unhealthy-hosts"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = 0
+  alarm_description   = "One or more backend tasks are unhealthy"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    LoadBalancer = aws_lb.prod.arn_suffix
+    TargetGroup  = aws_lb_target_group.prod_tg.arn_suffix
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = local.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "ecs_cpu_high" {
+  alarm_name          = "${local.name_prefix}-ecs-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 85
+  alarm_description   = "ECS service CPU utilization is sustained high"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    ClusterName = aws_ecs_cluster.prod.name
+    ServiceName = aws_ecs_service.prod_backend.name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = local.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
+  alarm_name          = "${local.name_prefix}-rds-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 85
+  alarm_description   = "RDS CPU utilization is sustained high"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.postgres.identifier
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = local.tags
+}
+
+# Fires while there is still headroom (10GB) before storage autoscaling or a
+# full disk become a problem.
+resource "aws_cloudwatch_metric_alarm" "rds_low_storage" {
+  alarm_name          = "${local.name_prefix}-rds-low-storage"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "FreeStorageSpace"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 10737418240 # 10 GB in bytes
+  alarm_description   = "RDS free storage is running low"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.postgres.identifier
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  tags = local.tags
 }
