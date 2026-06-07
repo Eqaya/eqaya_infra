@@ -18,11 +18,6 @@ output "rds_endpoint" {
   value       = aws_db_instance.postgres.endpoint
 }
 
-output "redis_endpoint" {
-  description = "Redis cluster endpoint"
-  value       = aws_elasticache_replication_group.redis.primary_endpoint_address
-}
-
 output "db_secret_arn" {
   description = "ARN of the database credentials secret in Secrets Manager"
   value       = aws_secretsmanager_secret.db_credentials.arn

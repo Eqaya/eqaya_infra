@@ -37,11 +37,6 @@ resource "random_password" "jwt_secret" {
   special = false
 }
 
-resource "random_password" "redis_auth_token" {
-  length  = 64
-  special = false
-}
-
 # --- VPC ---
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
@@ -182,21 +177,6 @@ resource "aws_security_group" "db_sg" {
   ingress {
     from_port       = 5432
     to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.ecs_sg.id]
-  }
-
-  tags = local.tags
-}
-
-resource "aws_security_group" "redis_sg" {
-  name        = "${local.name_prefix}-redis-sg"
-  description = "Redis ingress from ECS tasks"
-  vpc_id      = module.vpc.vpc_id
-
-  ingress {
-    from_port       = 6379
-    to_port         = 6379
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs_sg.id]
   }
@@ -725,9 +705,7 @@ resource "aws_secretsmanager_secret_version" "app_config" {
   secret_id = aws_secretsmanager_secret.app_config.id
   secret_string = jsonencode(merge(
     {
-      jwt_secret       = random_password.jwt_secret.result
-      redis_auth_token = random_password.redis_auth_token.result
-      redis_url        = "rediss://default:${random_password.redis_auth_token.result}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+      jwt_secret = random_password.jwt_secret.result
     },
     var.app_secrets
   ))
@@ -899,32 +877,6 @@ resource "aws_db_instance" "postgres" {
   tags = local.tags
 }
 
-# --- ElastiCache Redis ---
-resource "aws_elasticache_subnet_group" "redis" {
-  name       = "${local.name_prefix}-redis-subnet"
-  subnet_ids = module.vpc.private_subnets
-
-  tags = local.tags
-}
-
-resource "aws_elasticache_replication_group" "redis" {
-  replication_group_id       = "${local.name_prefix}-redis"
-  description                = "Eqaya production Redis cache"
-  engine                     = "redis"
-  engine_version             = "7.1"
-  node_type                  = "cache.t3.small"
-  port                       = 6379
-  num_cache_clusters         = 1
-  automatic_failover_enabled = false
-  at_rest_encryption_enabled = true
-  transit_encryption_enabled = true
-  auth_token                 = random_password.redis_auth_token.result
-  subnet_group_name          = aws_elasticache_subnet_group.redis.name
-  security_group_ids         = [aws_security_group.redis_sg.id]
-
-  tags = local.tags
-}
-
 # --- ECS ---
 resource "aws_ecs_cluster" "prod" {
   name = "${local.name_prefix}-cluster"
@@ -974,8 +926,7 @@ resource "aws_ecs_task_definition" "prod_backend" {
       { name = "DB_HOST", value = aws_db_instance.postgres.address },
       { name = "DB_PORT", value = "5432" },
       { name = "DB_NAME", value = local.db_name },
-      { name = "DB_USER", value = local.db_username },
-      { name = "REDIS_TLS", value = "true" }
+      { name = "DB_USER", value = local.db_username }
       ],
       [for name, value in var.app_environment : { name = name, value = value }]
     )
@@ -992,14 +943,6 @@ resource "aws_ecs_task_definition" "prod_backend" {
       {
         name      = "JWT_SECRET"
         valueFrom = "${aws_secretsmanager_secret.app_config.arn}:jwt_secret::"
-      },
-      {
-        name      = "REDIS_URL"
-        valueFrom = "${aws_secretsmanager_secret.app_config.arn}:redis_url::"
-      },
-      {
-        name      = "REDIS_AUTH_TOKEN"
-        valueFrom = "${aws_secretsmanager_secret.app_config.arn}:redis_auth_token::"
       }
       ],
       [for name in keys(var.app_secrets) : {
