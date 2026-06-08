@@ -97,10 +97,16 @@ jobs:
 
       - name: Write optional production variables
         run: |
+          # Defaults are held in shell variables, NOT written as literal "{}"
+          # inside the parameter expansion: bash parses "${VAR:-{}}" by matching
+          # the FIRST "}", which appends a stray brace to any non-empty value and
+          # produces invalid JSON (jq: invalid JSON text passed to --argjson).
+          empty_obj='{}'
+          empty_arr='[]'
           jq -n \
-            --argjson app_secrets "${PROD_APP_SECRETS_JSON:-{}}" \
-            --argjson app_environment "${PROD_APP_ENVIRONMENT_JSON:-{}}" \
-            --argjson budget_alert_emails "${PROD_BUDGET_ALERT_EMAILS_JSON:-[]}" \
+            --argjson app_secrets "${PROD_APP_SECRETS_JSON:-$empty_obj}" \
+            --argjson app_environment "${PROD_APP_ENVIRONMENT_JSON:-$empty_obj}" \
+            --argjson budget_alert_emails "${PROD_BUDGET_ALERT_EMAILS_JSON:-$empty_arr}" \
             '{
               app_secrets: $app_secrets,
               app_environment: $app_environment,
