@@ -62,3 +62,27 @@ output "alerts_topic_arn" {
   description = "ARN of the SNS topic for operational CloudWatch alarms"
   value       = aws_sns_topic.alerts.arn
 }
+
+output "frontend_bucket" {
+  description = "S3 bucket holding the built frontend SPA"
+  value       = aws_s3_bucket.frontend.bucket
+}
+
+output "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID for the frontend (for cache invalidation)"
+  value       = aws_cloudfront_distribution.frontend.id
+}
+
+output "cloudfront_domain_name" {
+  description = "CloudFront domain — point www.eqaya.com (CNAME) at this in GoDaddy"
+  value       = aws_cloudfront_distribution.frontend.domain_name
+}
+
+output "frontend_cert_validation" {
+  description = "ACM DNS-validation record to add in GoDaddy to issue the www cert"
+  value = [for o in aws_acm_certificate.frontend.domain_validation_options : {
+    name  = o.resource_record_name
+    type  = o.resource_record_type
+    value = o.resource_record_value
+  }]
+}

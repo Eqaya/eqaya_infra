@@ -11,9 +11,9 @@ variable "domain_name" {
 }
 
 variable "frontend_url" {
-  description = "Public frontend URL allowed by the backend CORS and websocket configuration"
+  description = "Public frontend URL allowed by the backend CORS and websocket configuration. www is canonical: the apex eqaya.com 301-forwards to www.eqaya.com (CloudFront), so the browser origin is always https://www.eqaya.com."
   type        = string
-  default     = "https://eqaya.com"
+  default     = "https://www.eqaya.com"
 }
 
 variable "environment" {

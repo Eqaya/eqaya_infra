@@ -160,3 +160,31 @@ jobs:
             --cluster "$(terraform output -raw ecs_cluster_name)" \
             --services "$(terraform output -raw ecs_service_name)"
         working-directory: ./infra/prod
+
+      # ---- Frontend: build the SPA and publish to S3 + CloudFront ----
+      - name: Read frontend outputs
+        id: frontend
+        working-directory: ./infra/prod
+        run: |
+          echo "bucket=$(terraform output -raw frontend_bucket)" >> "$GITHUB_OUTPUT"
+          echo "distribution=$(terraform output -raw cloudfront_distribution_id)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build and publish frontend
+        working-directory: ./app
+        env:
+          REACT_APP_API_URL: https://api.eqaya.com/api
+          # Don't fail the static build on ESLint warnings.
+          CI: "false"
+        run: |
+          npm ci
+          npm run build --workspace frontend
+          aws s3 sync frontend/build "s3://${{ steps.frontend.outputs.bucket }}" --delete
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.frontend.outputs.distribution }}" \
+            --paths '/*'
+        working-directory: ./infra/prod
