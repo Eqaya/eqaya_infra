@@ -988,6 +988,11 @@ resource "aws_ecs_service" "prod_backend" {
   deployment_maximum_percent         = 200
   enable_execute_command             = true
 
+  # Roll tasks on every apply so changes that don't alter the task definition
+  # (e.g. an updated app_config / app_secrets Secrets Manager value) are picked
+  # up — without this, a secrets-only change never restarts the running tasks.
+  force_new_deployment = true
+
   load_balancer {
     target_group_arn = aws_lb_target_group.prod_tg.arn
     container_name   = "eqaya-prod-backend"
