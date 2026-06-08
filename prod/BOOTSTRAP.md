@@ -48,22 +48,44 @@ gh secret set AWS_ROLE_TO_ASSUME -R Eqaya/eqaya_infra \
 # fine-grained token with Contents:read on Eqaya/eqaya-platform)
 gh secret set APP_REPO_TOKEN -R Eqaya/eqaya_infra -b "<github_pat>"
 
-# App runtime secrets injected into the container as `app_secrets`. Only the
-# 5 hard-required vars (FRONTEND_URL, DATABASE_URL, JWT_SECRET, AWS_REGION,
-# AWS_S3_BUCKET) are set by Terraform itself — everything else the app needs
-# for full functionality (SES from-address, Stripe, Supabase, AI keys, etc.)
-# goes here as a flat JSON object of NAME -> value.
+# App runtime secrets. Every key here is injected into the container as its
+# own env var (the task def maps `for name in keys(app_secrets)`), read from
+# the `eqaya-prod-app-config` Secrets Manager secret.
+#
+# VERIFIED against the backend (src/config/validateEnv.js): production HARD-
+# requires only 5 vars, and Terraform already injects ALL of them
+# (FRONTEND_URL, DATABASE_URL, JWT_SECRET, AWS_REGION, AWS_S3_BUCKET). So the
+# app BOOTS GREEN with an empty PROD_APP_SECRETS_JSON. Everything below is
+# feature-gated — only needed when that feature is exercised — so add keys
+# incrementally ("deploy small").
+#
+# Email (SES) — the app uses the ECS TASK ROLE for SES (it already has
+# ses:SendEmail on identity/${domain}). Do NOT set AWS_ACCESS_KEY_ID /
+# AWS_SECRET_NAME / AWS_SSM_PARAMETER_NAME in prod — any of those makes
+# EmailService try static creds instead of the role. Email needs only:
+#   AWS_SES_ENABLED   = "true"                  (turns SES on)
+#   AWS_SES_FROM_EMAIL = "info@eqaya.com"       (a VERIFIED @eqaya.com identity)
+#
+# Other common feature keys the backend reads (set only what you use):
+#   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET   (card payments)
+#   OPENAI_API_KEY / GEMINI_API_KEY / AI_MODEL (AI milestone + property check)
+#   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI  (Google OAuth)
+#   GOOGLE_MAPS_API_KEY, GOOGLE_GEOCODING_API_KEY               (maps/geocode)
+#   RECAPTCHA_SECRET_KEY                        (signup captcha)
+#   VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT          (web push)
+#   ECOCASH_*/ONEMONEY_*/MUKURU_*/WISE_*/WORLDREMIT_* (regional payout rails)
+# (Non-secret values like AI_MODEL/LOG_LEVEL can instead go in
+#  PROD_APP_ENVIRONMENT_JSON below — same effect, just not stored as a secret.)
+#
+# Minimal launch value (boots green + email works):
 gh secret set PROD_APP_SECRETS_JSON -R Eqaya/eqaya_infra -b '{
-  "STRIPE_SECRET_KEY": "...",
-  "SUPABASE_URL": "...",
-  "SUPABASE_SERVICE_KEY": "...",
-  "OPENAI_API_KEY": "...",
+  "AWS_SES_ENABLED": "true",
   "AWS_SES_FROM_EMAIL": "info@eqaya.com"
 }'
 ```
 
-> Confirm the exact key list against the app's `src/config/validateEnv.js`
-> before launch — those names must match what the backend reads.
+> SAFETY: never set `MOCK_PAYMENTS=true` in prod — validateEnv.js throws and
+> refuses to start (intentional guard against mocked withdrawals going live).
 
 ## 4. GitHub variables (optional but recommended)
 
