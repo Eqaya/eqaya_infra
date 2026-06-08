@@ -683,13 +683,19 @@ resource "aws_secretsmanager_secret" "db_credentials" {
 resource "aws_secretsmanager_secret_version" "db_credentials" {
   secret_id = aws_secretsmanager_secret.db_credentials.id
   secret_string = jsonencode({
-    username     = local.db_username
-    password     = random_password.db_password.result
-    engine       = "postgres"
-    host         = aws_db_instance.postgres.address
-    port         = 5432
-    dbname       = local.db_name
-    database_url = "postgresql://${local.db_username}:${urlencode(random_password.db_password.result)}@${aws_db_instance.postgres.address}:5432/${local.db_name}?sslmode=require"
+    username = local.db_username
+    password = random_password.db_password.result
+    engine   = "postgres"
+    host     = aws_db_instance.postgres.address
+    port     = 5432
+    dbname   = local.db_name
+    # sslmode=no-verify keeps the connection encrypted (RDS enforces SSL via
+    # rds.force_ssl=1) but skips CA-chain verification. pg >=8.16 parses
+    # sslmode=require as verify-full, which rejects RDS's Amazon-issued cert as
+    # "self-signed in chain" and crash-loops the app/migrations. no-verify maps
+    # to { rejectUnauthorized: false }, matching the app knexfile's intent.
+    # (Follow-up hardening: bundle the RDS global CA and switch to verify-full.)
+    database_url = "postgresql://${local.db_username}:${urlencode(random_password.db_password.result)}@${aws_db_instance.postgres.address}:5432/${local.db_name}?sslmode=no-verify"
   })
 }
 
