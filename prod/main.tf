@@ -793,7 +793,13 @@ resource "aws_iam_role_policy" "ecs_task_app_policy" {
           "ses:SendEmail",
           "ses:SendRawEmail"
         ]
-        Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}"
+        # The app sends from an address (info@eqaya.com). SES authorizes against the
+        # address identity ARN, not the domain identity ARN — so we must grant both:
+        # the domain identity and any address at the domain.
+        Resource = [
+          "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}",
+          "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/*@${var.domain_name}"
+        ]
       },
       {
         Sid    = "AllowECSExecSessions"
