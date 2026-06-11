@@ -523,6 +523,18 @@ resource "aws_wafv2_web_acl" "api" {
       managed_rule_group_statement {
         name        = "AWSManagedRulesCommonRuleSet"
         vendor_name = "AWS"
+
+        # SizeRestrictions_BODY blocks any request body > 8KB, which kills
+        # every file upload (photos/videos/documents) at the ALB before the
+        # app sees it — the browser gets a CORS-less 403 it can't even read.
+        # Count instead of block: the backend enforces its own per-type size
+        # limits (10MB photos / 25MB docs / 100MB videos via multer).
+        rule_action_override {
+          name = "SizeRestrictions_BODY"
+          action_to_use {
+            count {}
+          }
+        }
       }
     }
 
