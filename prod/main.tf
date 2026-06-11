@@ -938,7 +938,8 @@ resource "aws_ecs_task_definition" "prod_backend" {
       { name = "DB_HOST", value = aws_db_instance.postgres.address },
       { name = "DB_PORT", value = "5432" },
       { name = "DB_NAME", value = local.db_name },
-      { name = "DB_USER", value = local.db_username }
+      { name = "DB_USER", value = local.db_username },
+      { name = "AI_MODEL", value = var.ai_model }
       ],
       [for name, value in var.app_environment : { name = name, value = value }]
     )
@@ -957,10 +958,12 @@ resource "aws_ecs_task_definition" "prod_backend" {
         valueFrom = "${aws_secretsmanager_secret.app_config.arn}:jwt_secret::"
       }
       ],
+      # AI_MODEL is managed as a plain env var (var.ai_model) above, so skip it
+      # here to avoid a duplicate container env name if it lingers in app_secrets.
       [for name in keys(var.app_secrets) : {
         name      = name
         valueFrom = "${aws_secretsmanager_secret.app_config.arn}:${name}::"
-      }]
+      } if name != "AI_MODEL"]
     )
 
     healthCheck = {

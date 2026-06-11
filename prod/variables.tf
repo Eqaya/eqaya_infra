@@ -107,6 +107,12 @@ variable "app_secrets" {
   default     = {}
 }
 
+variable "ai_model" {
+  description = "Model id used by the backend AI services (Gemini via OpenRouter). Not a secret — managed here so model swaps are a one-line change. Overrides any AI_MODEL left in app_secrets."
+  type        = string
+  default     = "google/gemini-2.5-flash-lite"
+}
+
 variable "monthly_budget_limit_usd" {
   description = "Optional monthly production cost budget limit in USD"
   type        = number
