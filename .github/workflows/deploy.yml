@@ -185,7 +185,10 @@ jobs:
           # Client-side Google keys must be baked into the SPA at build time
           # (CRA inlines REACT_APP_* at build). Without these the prod bundle has
           # no key and Places autocomplete / Google login silently fall back.
-          REACT_APP_GOOGLE_MAPS_API_KEY: ${{ secrets.REACT_APP_GOOGLE_MAPS_API_KEY }}
+          # Primary source is the repo secret; fall back to the known-good public
+          # browser key (referrer-restricted to eqaya.com, verified working) so a
+          # missing/empty secret can't silently ship a keyless build again.
+          REACT_APP_GOOGLE_MAPS_API_KEY: ${{ secrets.REACT_APP_GOOGLE_MAPS_API_KEY || 'AIzaSyBAipEhO8MC-F6jCFYSJBTzjSvRrFwebH8' }}
           REACT_APP_GOOGLE_CLIENT_ID: ${{ secrets.REACT_APP_GOOGLE_CLIENT_ID }}
           REACT_APP_GOOGLE_EARTH_API_KEY: ${{ secrets.REACT_APP_GOOGLE_EARTH_API_KEY }}
           # Don't fail the static build on ESLint warnings.
