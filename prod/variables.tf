@@ -113,6 +113,12 @@ variable "ai_model" {
   default     = "google/gemini-2.5-flash-lite"
 }
 
+variable "client_signups_open" {
+  description = "When false, new client sign-ups (full + booking-wizard) are paused. Flip to true to reopen. Does not affect contractor/verifier signups or existing accounts."
+  type        = bool
+  default     = false
+}
+
 variable "monthly_budget_limit_usd" {
   description = "Optional monthly production cost budget limit in USD"
   type        = number
