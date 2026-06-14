@@ -877,7 +877,7 @@ resource "aws_db_instance" "postgres" {
   storage_type           = "gp3"
   storage_encrypted      = true
   engine                 = "postgres"
-  engine_version         = "15.15"
+  engine_version         = "15.17"
   username               = local.db_username
   password               = random_password.db_password.result
   db_name                = local.db_name
@@ -899,6 +899,15 @@ resource "aws_db_instance" "postgres" {
   performance_insights_enabled    = true
 
   tags = local.tags
+
+  # AWS auto-applies Postgres minor-version upgrades (auto_minor_version_upgrade
+  # defaults to true), so the live engine_version drifts ahead of this pin over
+  # time. RDS rejects "downgrades", which would otherwise fail every deploy until
+  # the pin is hand-bumped. Ignore engine_version drift so routine deploys don't
+  # fight AWS; bump the pin explicitly only for an intentional major upgrade.
+  lifecycle {
+    ignore_changes = [engine_version]
+  }
 }
 
 # --- ECS ---
