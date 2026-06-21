@@ -535,6 +535,28 @@ resource "aws_wafv2_web_acl" "api" {
             count {}
           }
         }
+
+        # Exempt the authenticated file-upload endpoints from this group's body
+        # content inspection. Multipart binary (JPEG/PNG/PDF) routinely
+        # false-positives as XSS/bad-input in the request body and is 403'd at
+        # the ALB before the app sees it. Auth + multer validate these uploads.
+        scope_down_statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/api/uploads/"
+                positional_constraint = "STARTS_WITH"
+                field_to_match {
+                  uri_path {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -557,6 +579,26 @@ resource "aws_wafv2_web_acl" "api" {
       managed_rule_group_statement {
         name        = "AWSManagedRulesKnownBadInputsRuleSet"
         vendor_name = "AWS"
+
+        # Exempt authenticated file-upload endpoints — binary bodies trip
+        # body-inspection rules. See CommonRuleSet scope-down above.
+        scope_down_statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/api/uploads/"
+                positional_constraint = "STARTS_WITH"
+                field_to_match {
+                  uri_path {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -623,6 +665,27 @@ resource "aws_wafv2_web_acl" "api" {
       managed_rule_group_statement {
         name        = "AWSManagedRulesSQLiRuleSet"
         vendor_name = "AWS"
+
+        # Exempt authenticated file-upload endpoints — SQLi_BODY was 403'ing
+        # multipart photo/document uploads (binary bytes look like SQL). See
+        # CommonRuleSet scope-down above.
+        scope_down_statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/api/uploads/"
+                positional_constraint = "STARTS_WITH"
+                field_to_match {
+                  uri_path {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
       }
     }
 
