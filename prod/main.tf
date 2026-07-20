@@ -546,79 +546,14 @@ resource "aws_wafv2_web_acl" "api" {
         scope_down_statement {
           not_statement {
             statement {
-              or_statement {
-                statement {
-                  byte_match_statement {
-                    search_string         = "/api/uploads/"
-                    positional_constraint = "STARTS_WITH"
-                    field_to_match {
-                      uri_path {}
-                    }
-                    text_transformation {
-                      priority = 0
-                      type     = "NONE"
-                    }
-                  }
+              regex_match_statement {
+                regex_string = "^/api/(uploads/|conversations/[0-9]+/messages$|quote-requests/[A-Za-z0-9_-]+/files$)"
+                field_to_match {
+                  uri_path {}
                 }
-                statement {
-                  and_statement {
-                    statement {
-                      byte_match_statement {
-                        search_string         = "/api/conversations/"
-                        positional_constraint = "STARTS_WITH"
-                        field_to_match {
-                          uri_path {}
-                        }
-                        text_transformation {
-                          priority = 0
-                          type     = "NONE"
-                        }
-                      }
-                    }
-                    statement {
-                      byte_match_statement {
-                        search_string         = "/messages"
-                        positional_constraint = "ENDS_WITH"
-                        field_to_match {
-                          uri_path {}
-                        }
-                        text_transformation {
-                          priority = 0
-                          type     = "NONE"
-                        }
-                      }
-                    }
-                  }
-                }
-                statement {
-                  and_statement {
-                    statement {
-                      byte_match_statement {
-                        search_string         = "/api/quote-requests/"
-                        positional_constraint = "STARTS_WITH"
-                        field_to_match {
-                          uri_path {}
-                        }
-                        text_transformation {
-                          priority = 0
-                          type     = "NONE"
-                        }
-                      }
-                    }
-                    statement {
-                      byte_match_statement {
-                        search_string         = "/files"
-                        positional_constraint = "ENDS_WITH"
-                        field_to_match {
-                          uri_path {}
-                        }
-                        text_transformation {
-                          priority = 0
-                          type     = "NONE"
-                        }
-                      }
-                    }
-                  }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
                 }
               }
             }
