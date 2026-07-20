@@ -537,21 +537,88 @@ resource "aws_wafv2_web_acl" "api" {
         }
 
         # Exempt the authenticated file-upload endpoints from this group's body
-        # content inspection. Multipart binary (JPEG/PNG/PDF) routinely
+        # content inspection. Multipart binary (JPEG/PNG/PDF/SKP/DWG) routinely
         # false-positives as XSS/bad-input in the request body and is 403'd at
         # the ALB before the app sees it. Auth + multer validate these uploads.
+        # Exempted narrowly: /api/uploads/*, chat attachments
+        # (/api/conversations/:id/messages) and quote-request files
+        # (/api/quote-requests/:id/files) — not the whole API prefix.
         scope_down_statement {
           not_statement {
             statement {
-              byte_match_statement {
-                search_string         = "/api/uploads/"
-                positional_constraint = "STARTS_WITH"
-                field_to_match {
-                  uri_path {}
+              or_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = "/api/uploads/"
+                    positional_constraint = "STARTS_WITH"
+                    field_to_match {
+                      uri_path {}
+                    }
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
                 }
-                text_transformation {
-                  priority = 0
-                  type     = "NONE"
+                statement {
+                  and_statement {
+                    statement {
+                      byte_match_statement {
+                        search_string         = "/api/conversations/"
+                        positional_constraint = "STARTS_WITH"
+                        field_to_match {
+                          uri_path {}
+                        }
+                        text_transformation {
+                          priority = 0
+                          type     = "NONE"
+                        }
+                      }
+                    }
+                    statement {
+                      byte_match_statement {
+                        search_string         = "/messages"
+                        positional_constraint = "ENDS_WITH"
+                        field_to_match {
+                          uri_path {}
+                        }
+                        text_transformation {
+                          priority = 0
+                          type     = "NONE"
+                        }
+                      }
+                    }
+                  }
+                }
+                statement {
+                  and_statement {
+                    statement {
+                      byte_match_statement {
+                        search_string         = "/api/quote-requests/"
+                        positional_constraint = "STARTS_WITH"
+                        field_to_match {
+                          uri_path {}
+                        }
+                        text_transformation {
+                          priority = 0
+                          type     = "NONE"
+                        }
+                      }
+                    }
+                    statement {
+                      byte_match_statement {
+                        search_string         = "/files"
+                        positional_constraint = "ENDS_WITH"
+                        field_to_match {
+                          uri_path {}
+                        }
+                        text_transformation {
+                          priority = 0
+                          type     = "NONE"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
