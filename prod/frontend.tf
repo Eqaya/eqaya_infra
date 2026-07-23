@@ -87,6 +87,35 @@ resource "aws_cloudfront_distribution" "frontend" {
     origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
   }
 
+  # Backend origin for server-rendered share/OG pages (WhatsApp link previews).
+  origin {
+    domain_name = "api.${var.domain_name}"
+    origin_id   = "api-share"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  # /share/* is rendered by the backend so crawlers get real OG meta tags
+  # instead of the SPA shell. Never cached; Host is rewritten to the origin's
+  # (AllViewerExceptHostHeader) so the ALB routes it to the API.
+  ordered_cache_behavior {
+    path_pattern           = "/share/*"
+    target_origin_id       = "api-share"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+    # AWS managed "CachingDisabled" cache policy.
+    cache_policy_id = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+    # AWS managed "AllViewerExceptHostHeader" origin request policy.
+    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
+  }
+
   default_cache_behavior {
     target_origin_id       = "s3-frontend"
     viewer_protocol_policy = "redirect-to-https"
