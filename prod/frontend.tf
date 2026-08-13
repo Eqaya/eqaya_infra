@@ -65,6 +65,63 @@ resource "aws_acm_certificate_validation" "frontend" {
   validation_record_fqdns = [for o in aws_acm_certificate.frontend.domain_validation_options : o.resource_record_name]
 }
 
+# --- Security headers on every SPA response ---
+# The backend (helmet) already hardens api.eqaya.com; this mirrors it for the
+# S3-served frontend, which otherwise ships with no security headers at all.
+# Keep in sync with the dev mirror: /etc/nginx/snippets/eqaya-security-headers.conf
+# on the dev box. The CSP allowlist covers everything the SPA loads: Google
+# Maps/Places, Google Sign-In, reCAPTCHA, Google Fonts, GA4, S3 media, and the
+# API + websockets. 'unsafe-inline' is required by MUI (inline styles) and the
+# CRA-inlined webpack runtime chunk.
+resource "aws_cloudfront_response_headers_policy" "frontend_security" {
+  name = "${local.name_prefix}-frontend-security-headers"
+
+  security_headers_config {
+    strict_transport_security {
+      access_control_max_age_sec = 31536000
+      include_subdomains         = true
+      preload                    = true
+      override                   = true
+    }
+    content_type_options {
+      override = true
+    }
+    frame_options {
+      frame_option = "DENY"
+      override     = true
+    }
+    referrer_policy {
+      referrer_policy = "strict-origin-when-cross-origin"
+      override        = true
+    }
+    content_security_policy {
+      content_security_policy = join("; ", [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' https://accounts.google.com https://maps.googleapis.com https://places.googleapis.com https://www.google.com https://www.gstatic.com https://www.googletagmanager.com",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
+        "font-src 'self' data: https://fonts.gstatic.com",
+        "img-src 'self' data: blob: https://*.amazonaws.com https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com",
+        "connect-src 'self' https://api.eqaya.com wss: https://*.google-analytics.com https://*.googleapis.com https://accounts.google.com https://www.googletagmanager.com",
+        "frame-src https://www.google.com https://accounts.google.com",
+        "worker-src 'self' blob:",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+      ])
+      override = true
+    }
+  }
+
+  custom_headers_config {
+    items {
+      header   = "Permissions-Policy"
+      value    = "geolocation=(self), camera=(self), microphone=(self), payment=(), usb=()"
+      override = true
+    }
+  }
+}
+
 # --- CloudFront Origin Access Control (keeps the bucket fully private) ---
 resource "aws_cloudfront_origin_access_control" "frontend" {
   name                              = "${local.name_prefix}-frontend-oac"
@@ -124,6 +181,9 @@ resource "aws_cloudfront_distribution" "frontend" {
     compress               = true
     # AWS managed "CachingOptimized" policy.
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+    # Not attached to the /share/* behavior — the backend (helmet) already
+    # sets its own headers there and they should win.
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.frontend_security.id
   }
 
   # SPA client-side routing: any missing key returns index.html (200) so deep
