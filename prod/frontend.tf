@@ -71,8 +71,9 @@ resource "aws_acm_certificate_validation" "frontend" {
 # Keep in sync with the dev mirror: /etc/nginx/snippets/eqaya-security-headers.conf
 # on the dev box. The CSP allowlist covers everything the SPA loads: Google
 # Maps/Places, Google Sign-In, reCAPTCHA, Google Fonts, GA4, S3 media, and the
-# API + websockets. 'unsafe-inline' is required by MUI (inline styles) and the
-# CRA-inlined webpack runtime chunk.
+# API + websockets. style-src keeps 'unsafe-inline' (MUI injects inline
+# styles); script-src does NOT — the built index.html has no inline scripts,
+# and Mozilla Observatory docks 20 points for 'unsafe-inline' in script-src.
 resource "aws_cloudfront_response_headers_policy" "frontend_security" {
   name = "${local.name_prefix}-frontend-security-headers"
 
@@ -97,7 +98,7 @@ resource "aws_cloudfront_response_headers_policy" "frontend_security" {
     content_security_policy {
       content_security_policy = join("; ", [
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline' https://accounts.google.com https://maps.googleapis.com https://places.googleapis.com https://www.google.com https://www.gstatic.com https://www.googletagmanager.com",
+        "script-src 'self' https://accounts.google.com https://maps.googleapis.com https://places.googleapis.com https://www.google.com https://www.gstatic.com https://www.googletagmanager.com",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
         "font-src 'self' data: https://fonts.gstatic.com",
         "img-src 'self' data: blob: https://*.amazonaws.com https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.googleusercontent.com",
