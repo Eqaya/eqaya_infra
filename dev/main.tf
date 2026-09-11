@@ -164,7 +164,7 @@ resource "aws_eip" "dev_eip" {
 # --- EC2 Development Server (t2.large) ---
 resource "aws_instance" "dev_server" {
   ami           = "ami-0c7217cdde317cfec" # Ubuntu 22.04 LTS
-  instance_type = "t2.large"              # 8GB RAM Intel Instance
+  instance_type = "t3a.large"             # 8GB RAM AMD — downsized from t3.xlarge 2026-09-11 (cost)
 
   subnet_id                   = module.vpc.public_subnets[0]
   vpc_security_group_ids      = [aws_security_group.dev_sg.id]
