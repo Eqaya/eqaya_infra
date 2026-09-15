@@ -1026,6 +1026,7 @@ resource "aws_ecs_task_definition" "prod_backend" {
       { name = "DB_NAME", value = local.db_name },
       { name = "DB_USER", value = local.db_username },
       { name = "AI_MODEL", value = var.ai_model },
+      { name = "AI_BRIEF_MODEL", value = var.ai_brief_model },
       { name = "CLIENT_SIGNUPS_OPEN", value = tostring(var.client_signups_open) }
       ],
       [for name, value in var.app_environment : { name = name, value = value }]
