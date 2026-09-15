@@ -113,6 +113,12 @@ variable "ai_model" {
   default     = "google/gemini-2.5-flash-lite"
 }
 
+variable "ai_brief_model" {
+  description = "Model id for the weekly Monday operating brief only (OpsBriefService). Runs once a week on a few thousand tokens, so a stronger model costs cents and writes noticeably better call openers. Falls back to ai_model in code when unset."
+  type        = string
+  default     = "anthropic/claude-sonnet-4.5"
+}
+
 variable "client_signups_open" {
   description = "When false, new client sign-ups (full + booking-wizard) are paused. Flip to true to reopen. Does not affect contractor/verifier signups or existing accounts."
   type        = bool
