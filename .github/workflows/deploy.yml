@@ -1,9 +1,9 @@
 name: Deploy Production Infrastructure and Backend
 
+# Manual only. Every real deploy is dispatched by hand and approved at the
+# production gate; push-triggered runs just sat at the gate for 30 days and
+# then emailed a "failed" notice. PRs still run Validate Terraform.
 on:
-  push:
-    branches:
-      - release
   pull_request:
     branches:
       - release
